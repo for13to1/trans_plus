@@ -1,10 +1,17 @@
+import sys
+import os
+
+# Allow importing from framework when running from addition_agent
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
-from autograd import Tensor
-from dataset import AdditionDataset
-from model import TransformerModel
+from framework.autograd import Tensor
+from addition_agent.dataset import AdditionDataset
+from framework.model import TransformerModel
 import argparse
 import time
-import config
+import addition_agent.config as config
+
 
 class AdamOptimizer:
     def __init__(self, parameters, lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
@@ -29,14 +36,15 @@ class AdamOptimizer:
             self.m[i] = self.beta1 * self.m[i] + (1 - self.beta1) * grad
 
             # v = beta2 * v + (1 - beta2) * g^2
-            self.v[i] = self.beta2 * self.v[i] + (1 - self.beta2) * (grad ** 2)
+            self.v[i] = self.beta2 * self.v[i] + (1 - self.beta2) * (grad**2)
 
             # Bias correction
-            m_hat = self.m[i] / (1 - self.beta1 ** self.t)
-            v_hat = self.v[i] / (1 - self.beta2 ** self.t)
+            m_hat = self.m[i] / (1 - self.beta1**self.t)
+            v_hat = self.v[i] / (1 - self.beta2**self.t)
 
             # Update
             p.data -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
+
 
 def train():
     print("=== Training Tiny Autograd Transformer (with Adam) ===")
@@ -46,11 +54,7 @@ def train():
     dataset = AdditionDataset(max_digits=config.MAX_DIGITS)
 
     # Calculate sufficient max_len
-    # format: "123+456" (7 chars) + <sos> + "579" (3 chars) + <eos> = 12 tokens
-    # dataset.max_input_len = 2*N + 1
-    # dataset.max_output_len = N + 1 + 2
-    # Total seq len trained is input + output (minus 1 for shift)
-    # Safer to just give it enough room.
+    # Ensure enough room for input, output, and special tokens
     max_seq_len = dataset.max_input_len + dataset.max_output_len + 5
 
     # 2. Model
@@ -59,7 +63,7 @@ def train():
         d_model=config.D_MODEL,
         num_heads=config.NUM_HEADS,
         num_layers=config.NUM_LAYERS,
-        max_len=max_seq_len
+        max_len=max_seq_len,
     )
 
     # Optimizer
@@ -73,7 +77,7 @@ def train():
     for i in range(config.MAX_STEPS):
         # --- Data Preparation ---
         src, tgt = dataset.get_batch(batch_size=config.BATCH_SIZE)
-        full_input = np.concatenate([src, tgt[:, :-1]], axis=1) # (B, L)
+        full_input = np.concatenate([src, tgt[:, :-1]], axis=1)  # (B, L)
 
         targets_src = np.full_like(src, -100)
         targets_tgt = tgt[:, 1:]
@@ -81,7 +85,7 @@ def train():
         # Ignore loss for pad tokens
         targets_tgt = np.where(targets_tgt == dataset.pad_id, -100, targets_tgt)
 
-        targets = np.concatenate([targets_src, targets_tgt], axis=1) # (B, L)
+        targets = np.concatenate([targets_src, targets_tgt], axis=1)  # (B, L)
 
         # --- Masks ---
         L = full_input.shape[1]
@@ -90,7 +94,7 @@ def train():
         causal_mask_val = np.triu(np.ones((L, L)), k=1) * -1e9
 
         # 2. Padding Mask
-        is_pad = (full_input == dataset.pad_id) # (B, L)
+        is_pad = full_input == dataset.pad_id  # (B, L)
         pad_mask_val = is_pad[:, np.newaxis, np.newaxis, :] * -1e9
 
         # Combine
@@ -99,10 +103,12 @@ def train():
 
         # --- Forward Pass ---
         model.zero_grad()
-        logits = model(full_input, mask) # (B, L, V)
+        logits = model(full_input, mask)  # (B, L, V)
 
         # --- Loss Calculation ---
-        loss = logits.reshape((-1, dataset.vocab_size)).cross_entropy(targets.reshape(-1))
+        loss = logits.reshape((-1, dataset.vocab_size)).cross_entropy(
+            targets.reshape(-1)
+        )
 
         # --- Backward Pass ---
         loss.backward()
@@ -117,11 +123,12 @@ def train():
         if i % 50 == 0:
             # Check last sample in batch
             pred_ids = np.argmax(logits.data[0, -3:, :], axis=-1)
-            pred_tokens = [dataset.id_to_char.get(x, '') for x in pred_ids]
+            pred_tokens = [dataset.id_to_char.get(x, "") for x in pred_ids]
             print(f"  Example Prediction (Last 3 chars): {pred_tokens}")
 
     # Save Model
-    model.save_weights('tiny_model.pkl')
+    model.save_weights(config.MODEL_FILENAME)
+
 
 if __name__ == "__main__":
     train()

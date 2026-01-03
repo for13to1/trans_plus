@@ -1,7 +1,8 @@
 import numpy as np
 
+
 class Tensor:
-    def __init__(self, data, _children=(), _op='', label=''):
+    def __init__(self, data, _children=(), _op="", label=""):
         self.data = np.array(data) if not isinstance(data, np.ndarray) else data
         self.grad = np.zeros_like(self.data, dtype=np.float32)
         # Internal variables for autograd graph building
@@ -17,12 +18,14 @@ class Tensor:
         # Topological Sort
         topo = []
         visited = set()
+
         def build_topo(v):
             if v not in visited:
                 visited.add(v)
                 for child in v._prev:
                     build_topo(child)
                 topo.append(v)
+
         build_topo(self)
 
         # Go one variable at a time and apply the chain rule to get its gradient
@@ -34,7 +37,7 @@ class Tensor:
 
     def __add__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
-        out = Tensor(self.data + other.data, (self, other), '+')
+        out = Tensor(self.data + other.data, (self, other), "+")
 
         def _backward():
             # Robust Broadcast handling
@@ -71,7 +74,7 @@ class Tensor:
 
     def __mul__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
-        out = Tensor(self.data * other.data, (self, other), '*')
+        out = Tensor(self.data * other.data, (self, other), "*")
 
         def _backward():
             d_self = other.data * out.grad
@@ -91,15 +94,15 @@ class Tensor:
         out._backward = _backward
         return out
 
-    def __neg__(self): # -self
+    def __neg__(self):  # -self
         return self * -1
 
-    def __sub__(self, other): # self - other
+    def __sub__(self, other):  # self - other
         return self + (-other)
 
     def matmul(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
-        out = Tensor(self.data @ other.data, (self, other), '@')
+        out = Tensor(self.data @ other.data, (self, other), "@")
 
         def _backward():
             # Handle Batched Matmul
@@ -111,7 +114,9 @@ class Tensor:
             grad_other = self_T @ out.grad
 
             if len(grad_other.shape) > len(other.data.shape):
-                axes_to_sum = tuple(range(len(grad_other.shape) - len(other.data.shape)))
+                axes_to_sum = tuple(
+                    range(len(grad_other.shape) - len(other.data.shape))
+                )
                 grad_other = np.sum(grad_other, axis=axes_to_sum)
 
             other.grad += grad_other
@@ -120,7 +125,7 @@ class Tensor:
         return out
 
     def transpose(self, dim0, dim1):
-        out = Tensor(np.swapaxes(self.data, dim0, dim1), (self,), 'T')
+        out = Tensor(np.swapaxes(self.data, dim0, dim1), (self,), "T")
 
         def _backward():
             self.grad += np.swapaxes(out.grad, dim0, dim1)
@@ -130,7 +135,7 @@ class Tensor:
 
     def reshape(self, shape):
         old_shape = self.data.shape
-        out = Tensor(self.data.reshape(shape), (self,), 'reshape')
+        out = Tensor(self.data.reshape(shape), (self,), "reshape")
 
         def _backward():
             self.grad += out.grad.reshape(old_shape)
@@ -141,10 +146,11 @@ class Tensor:
     # --- Activations ---
 
     def relu(self):
-        out = Tensor(np.maximum(0, self.data), (self,), 'relu')
+        out = Tensor(np.maximum(0, self.data), (self,), "relu")
 
         def _backward():
             self.grad += (out.data > 0) * out.grad
+
         out._backward = _backward
         return out
 
@@ -154,7 +160,7 @@ class Tensor:
         sums = np.sum(exps, axis=axis, keepdims=True)
         probs = exps / sums
 
-        out = Tensor(probs, (self,), 'softmax')
+        out = Tensor(probs, (self,), "softmax")
 
         def _backward():
             y = out.data
@@ -174,7 +180,7 @@ class Tensor:
         log_sums = np.log(sums)
 
         data = shifted - log_sums
-        out = Tensor(data, (self,), 'log_softmax')
+        out = Tensor(data, (self,), "log_softmax")
 
         def _backward():
             softmax_val = np.exp(out.data)
@@ -191,7 +197,7 @@ class Tensor:
         probs_flat = probs.data.reshape(-1, vocab_size)
         targets_flat = targets.reshape(-1)
 
-        valid_mask = (targets_flat >= 0)
+        valid_mask = targets_flat >= 0
         valid_targets = targets_flat[valid_mask]
         valid_probs = probs_flat[valid_mask]
 
@@ -201,7 +207,7 @@ class Tensor:
         else:
             loss_val = 0.0
 
-        out = Tensor(loss_val, (probs,), 'nll_loss')
+        out = Tensor(loss_val, (probs,), "nll_loss")
 
         def _backward():
             N = len(valid_targets)

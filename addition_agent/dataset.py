@@ -5,6 +5,7 @@ import random
 # EOS: End of Sequence
 # PAD: Padding
 
+
 class AdditionDataset:
     """
     Dataset for generating N-digit addition problems.
@@ -17,13 +18,29 @@ class AdditionDataset:
 
         # Build Vocabulary
         # 0-9, +, <sos>, <eos>, <pad>
-        self.chars = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', ' ', '<sos>', '<eos>', '<pad>']
+        self.chars = [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "+",
+            " ",
+            "<sos>",
+            "<eos>",
+            "<pad>",
+        ]
         self.char_to_id = {c: i for i, c in enumerate(self.chars)}
         self.id_to_char = {i: c for i, c in enumerate(self.chars)}
 
-        self.pad_id = self.char_to_id['<pad>']
-        self.sos_id = self.char_to_id['<sos>']
-        self.eos_id = self.char_to_id['<eos>']
+        self.pad_id = self.char_to_id["<pad>"]
+        self.sos_id = self.char_to_id["<sos>"]
+        self.eos_id = self.char_to_id["<eos>"]
         self.vocab_size = len(self.chars)
 
         # Calculate max length
@@ -34,7 +51,13 @@ class AdditionDataset:
         return [self.char_to_id[c] for c in text]
 
     def decode(self, ids):
-        return "".join([self.id_to_char[i] for i in ids if i not in [self.pad_id, self.sos_id, self.eos_id]])
+        return "".join(
+            [
+                self.id_to_char[i]
+                for i in ids
+                if i not in [self.pad_id, self.sos_id, self.eos_id]
+            ]
+        )
 
     def get_batch(self, batch_size=32):
         src_batch = []
@@ -53,12 +76,12 @@ class AdditionDataset:
             if d1 == 1:
                 n1 = random.randint(0, 9)
             else:
-                n1 = random.randint(10**(d1-1), 10**d1 - 1)
+                n1 = random.randint(10 ** (d1 - 1), 10**d1 - 1)
 
             if d2 == 1:
                 n2 = random.randint(0, 9)
             else:
-                n2 = random.randint(10**(d2-1), 10**d2 - 1)
+                n2 = random.randint(10 ** (d2 - 1), 10**d2 - 1)
 
             problem_str = f"{n1}+{n2}"
             ans_str = str(n1 + n2)

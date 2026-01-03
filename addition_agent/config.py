@@ -1,4 +1,5 @@
 # Configuration
+import os
 
 # Dataset Config
 MAX_DIGITS = 2
@@ -12,3 +13,8 @@ NUM_LAYERS = 2
 BATCH_SIZE = 32
 MAX_STEPS = 3000
 LEARNING_RATE = 0.001
+
+# File Config
+MODEL_FILENAME = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "addition_model.pkl"
+)

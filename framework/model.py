@@ -1,6 +1,7 @@
 import numpy as np
-from autograd import Tensor
+from .autograd import Tensor
 import pickle
+
 
 class Module:
     def parameters(self):
@@ -13,18 +14,20 @@ class Module:
     def save_weights(self, path):
         # Flatten all parameters data into a list
         params_data = [p.data for p in self.parameters()]
-        with open(path, 'wb') as f:
+        with open(path, "wb") as f:
             pickle.dump(params_data, f)
         print(f"Weights saved to {path}")
 
     def load_weights(self, path):
         try:
-            with open(path, 'rb') as f:
+            with open(path, "rb") as f:
                 params_data = pickle.load(f)
 
             my_params = self.parameters()
             if len(params_data) != len(my_params):
-                print(f"Error: Parameter count mismatch. Saved: {len(params_data)}, Model: {len(my_params)}")
+                print(
+                    f"Error: Parameter count mismatch. Saved: {len(params_data)}, Model: {len(my_params)}"
+                )
                 return
 
             for p, saved_data in zip(my_params, params_data):
@@ -38,8 +41,10 @@ class Linear(Module):
     def __init__(self, in_features, out_features, bias=True):
         # Xavier/Kaiming Init
         limit = np.sqrt(6 / (in_features + out_features))
-        self.weight = Tensor(np.random.uniform(-limit, limit, (in_features, out_features)), label='W')
-        self.bias = Tensor(np.zeros(out_features), label='b') if bias else None
+        self.weight = Tensor(
+            np.random.uniform(-limit, limit, (in_features, out_features)), label="W"
+        )
+        self.bias = Tensor(np.zeros(out_features), label="b") if bias else None
 
     def __call__(self, x):
         out = x.matmul(self.weight)
@@ -50,20 +55,17 @@ class Linear(Module):
     def parameters(self):
         return [self.weight] + ([self.bias] if self.bias else [])
 
+
 class Embedding(Module):
     def __init__(self, num_embeddings, embedding_dim):
         self.weight = Tensor(np.random.randn(num_embeddings, embedding_dim) * 0.1)
 
     def __call__(self, indices):
-        # Indices is numpy array of ints
-        # We need to gather rows from self.weight
-        # Since Tensor currently doesn't support advanced slicing in graph,
-        # we treat this as a Lookup.
-        # dL/dW[idx] += dL/dOut
+        # Helper for handling embedding lookup gradients
 
-        # Forward is easy:
+        # Forward pass
         out_data = self.weight.data[indices]
-        out = Tensor(out_data, (self.weight,), 'embedding')
+        out = Tensor(out_data, (self.weight,), "embedding")
 
         # Standard closure for backward
         def _backward():
@@ -86,9 +88,11 @@ class Embedding(Module):
     def parameters(self):
         return [self.weight]
 
+
 class ReLU(Module):
     def __call__(self, x):
         return x.relu()
+
 
 class LayerNorm(Module):
     def __init__(self, normalized_shape, eps=1e-5):
@@ -97,14 +101,7 @@ class LayerNorm(Module):
         self.eps = eps
 
     def __call__(self, x):
-        # x: [batch, len, dim]
-        # mean/var over last dim
-        # Since Tensor lib is simple, let's implement minimal manual backward for LN or use primitives
-        # Using primitives:
-        # mean = x.mean(...) -> Need to implement mean in Tensor
-        # Let's simplify and assume x is (B, L, D) and we normalize over D
-
-        # Manual Forward/Backward for LayerNorm is often cleaner in simple engines
+        # Manual Forward/Backward for LayerNorm for efficiency
 
         mean = np.mean(x.data, axis=-1, keepdims=True)
         var = np.var(x.data, axis=-1, keepdims=True)
@@ -112,7 +109,7 @@ class LayerNorm(Module):
         x_norm = (x.data - mean) / std
 
         out_data = self.gamma.data * x_norm + self.beta.data
-        out = Tensor(out_data, (x, self.gamma, self.beta), 'layernorm')
+        out = Tensor(out_data, (x, self.gamma, self.beta), "layernorm")
 
         def _backward():
             # Primitive gradients for LN are standard but verbose.
@@ -131,7 +128,7 @@ class LayerNorm(Module):
 
             dx = (1.0 / N) / std * (term1 - term2 - term3)
 
-            self.beta.grad += np.sum(out.grad, axis=(0, 1)) # Sum over batch/seq
+            self.beta.grad += np.sum(out.grad, axis=(0, 1))  # Sum over batch/seq
             self.gamma.grad += np.sum(out.grad * x_norm, axis=(0, 1))
             x.grad += dx
 
@@ -140,6 +137,7 @@ class LayerNorm(Module):
 
     def parameters(self):
         return [self.gamma, self.beta]
+
 
 class MultiHeadAttention(Module):
     def __init__(self, d_model, num_heads):
@@ -163,14 +161,11 @@ class MultiHeadAttention(Module):
 
         # Reshape for Heads
         # (B, S, H, Dk) -> (B, H, S, Dk)
-        # Tensor doesn't support complex reshape/transpose chain efficiently in my minimal Autograd,
-        # but I implemented reshape and transpose.
-        # Let's try doing it carefully.
 
         # Function to split heads
         def split_heads(x):
             x = x.reshape((batch_size, -1, self.num_heads, self.d_k))
-            x = x.transpose(1, 2) # (B, S, H, Dk) -> (B, H, S, Dk)
+            x = x.transpose(1, 2)  # (B, S, H, Dk) -> (B, H, S, Dk)
             return x
 
         Q = split_heads(Q)
@@ -185,13 +180,10 @@ class MultiHeadAttention(Module):
         # My transpose: `np.swapaxes(self.data, dim0, dim1)`.
         K_t = K.transpose(-1, -2)
 
-        scores = Q.matmul(K_t) # (B, H, S, S)
+        scores = Q.matmul(K_t)  # (B, H, S, S)
 
-        # Scale?
-        # Tensor doesn't have scalar div yet.
-        # Impl scalar ops or hack it
+        # Scale scores
         scale_factor = 1.0 / np.sqrt(self.d_k)
-        # Hack: multiply by constant Tensor
         scores = scores * Tensor(np.array(scale_factor))
 
         # Masking
@@ -204,7 +196,7 @@ class MultiHeadAttention(Module):
 
         attn = scores.softmax(axis=-1)
 
-        context = attn.matmul(V) # (B, H, S, Dk)
+        context = attn.matmul(V)  # (B, H, S, Dk)
 
         # Concat heads
         # (B, H, S, Dk) -> (B, S, H, Dk) -> (B, S, D)
@@ -214,7 +206,13 @@ class MultiHeadAttention(Module):
         return self.w_o(context)
 
     def parameters(self):
-        return self.w_q.parameters() + self.w_k.parameters() + self.w_v.parameters() + self.w_o.parameters()
+        return (
+            self.w_q.parameters()
+            + self.w_k.parameters()
+            + self.w_v.parameters()
+            + self.w_o.parameters()
+        )
+
 
 class TransformerBlock(Module):
     def __init__(self, d_model, num_heads, d_ff):
@@ -227,10 +225,7 @@ class TransformerBlock(Module):
         self.relu = ReLU()
 
     def __call__(self, x, mask=None):
-        # Resid connection?
-        # x + attn(x)
-        # My Tensor needs __add__ check
-
+        # Residual connection: x + attn(x)
         attn_out = self.attn(x, x, x, mask)
         x = self.norm1(x + attn_out)
 
@@ -239,14 +234,22 @@ class TransformerBlock(Module):
         return x
 
     def parameters(self):
-        return self.attn.parameters() + self.norm1.parameters() + self.norm2.parameters() + \
-               self.ff1.parameters() + self.ff2.parameters()
+        return (
+            self.attn.parameters()
+            + self.norm1.parameters()
+            + self.norm2.parameters()
+            + self.ff1.parameters()
+            + self.ff2.parameters()
+        )
+
 
 class TransformerModel(Module):
     def __init__(self, vocab_size, d_model, num_heads, num_layers=2, max_len=20):
         self.embedding = Embedding(vocab_size, d_model)
-        self.pos_emb = Tensor(self.get_pe(max_len, d_model)) # Dynamic length
-        self.layers = [TransformerBlock(d_model, num_heads, d_model*4) for _ in range(num_layers)]
+        self.pos_emb = Tensor(self.get_pe(max_len, d_model))  # Dynamic length
+        self.layers = [
+            TransformerBlock(d_model, num_heads, d_model * 4) for _ in range(num_layers)
+        ]
         self.fc_out = Linear(d_model, vocab_size)
 
     def get_pe(self, max_len, d_model):
@@ -259,7 +262,7 @@ class TransformerModel(Module):
 
     def __call__(self, indices, mask=None):
         # indices: (B, S)
-        x = self.embedding(indices) # (B, S, D)
+        x = self.embedding(indices)  # (B, S, D)
 
         # Add PE (slice to current length)
         seq_len = x.data.shape[1]

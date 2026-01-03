@@ -16,12 +16,17 @@
 
 ```text
 .
-├── autograd.py   # 核心自动微分引擎：定义 Tensor 类及各种算子 (Add, Mul, MatMul, ReLU, Softmax 等) 的反向传播逻辑
-├── model.py      # 模型定义：基于 autograd.py 构建的 Linear, LayerNorm, Attention, TransformerBlock 等层
-├── dataset.py    # 数据集：生成随机的加法算式 (e.g., "12+34=46") 用于训练
-├── config.py     # 配置文件：管理 MAX_DIGITS, 模型参数, 训练参数等
-├── train.py      # 训练脚本：构建模型、定义 Loss、优化器 (Adam) 并执行训练循环
-├── inference.py  # 推理脚本：加载训练好的权重，进行交互式的加法预测
+├── framework/           # 基础框架 (Infrastructure)
+│   ├── __init__.py
+│   ├── autograd.py      # Autograd Engine
+│   └── model.py         # Transformer Layers
+├── addition_agent/      # 业务逻辑 (Business - Addition Task)
+│   ├── __init__.py
+│   ├── config.py        # Task Configuration
+│   ├── dataset.py       # Addition Data Generator
+│   ├── train.py         # Training Script
+│   └── inference.py     # Inference Script
+│
 └── README.md     # 说明文档
 ```
 
@@ -37,23 +42,23 @@ pip install numpy
 
 ### 2. 训练模型
 
-运行 `train.py` 开始训练模型。代码会读取 `config.py` 中的配置（默认支持 2 位数加法），生成数据并在终端打印 Loss 和部分预测结果。
+运行 `addition_agent/train.py` 开始训练模型。
 
 ```bash
-python3 train.py
+python3 addition_agent/train.py
 ```
 
 训练过程说明：
 *   默认训练 3000 步。
-*   配置参数可在 `config.py` 中修改（如 `MAX_DIGITS`, `BATCH_SIZE` 等）。
-*   训练完成后，权重会保存为 `tiny_model.pkl`。
+*   配置参数可在 `addition_agent/config.py` 中修改（如 `MAX_DIGITS`, `BATCH_SIZE` 等）。
+*   训练完成后，权重会保存为 `addition_model.pkl`。
 
 ### 3. 模型推理
 
-训练完成后，运行 `inference.py` 测试模型效果。你可以在终端输入加法算式，查看模型输出。
+训练完成后，运行 `addition_agent/inference.py` 测试模型效果。
 
 ```bash
-python3 inference.py
+python3 addition_agent/inference.py
 ```
 
 **示例交互：**

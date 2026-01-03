@@ -1,28 +1,22 @@
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
-from autograd import Tensor
-from dataset import AdditionDataset
-from model import TransformerModel
+from framework.autograd import Tensor
+from addition_agent.dataset import AdditionDataset
+from framework.model import TransformerModel
 import argparse
-import config
+import addition_agent.config as config
+
+
 def greedy_decode(model, dataset, problem_str, max_len=5):
     # Encode Input
     # "12+34" -> [1, 2, +, 3, 4]
     src_ids = dataset.encode(problem_str)
 
-    # We need to feed [src] + [<sos>] to start generating
-    # Current Model Logic (train.py):
-    # It takes a full sequence `src + tgt` and predicts next token.
-    # We can simulate generation by appending predicted token one by one.
-
-    # Start: "12+34" + "<sos>"
-    # Pad src to max length?
-    # The Dataset padding logic puts padding at end.
-    # Our simple inference should match what model saw during training.
-    # Training saw: "12+34 <pad> <pad> <sos> 46 <eos> <pad>"
-
-    # Let's constructing explicit input:
-    # "12+34"
-    # Append <sos>
+    # Prepare input: "12+34" + "<sos>"
 
     # Pad src to max length to match training distribution
     pad_len = dataset.max_input_len - len(src_ids)
@@ -46,7 +40,7 @@ def greedy_decode(model, dataset, problem_str, max_len=5):
         causal_mask_val = np.triu(np.ones((L, L)), k=1) * -1e9
 
         # 2. Padding
-        is_pad = (input_ids == dataset.pad_id) # (1, L)
+        is_pad = input_ids == dataset.pad_id  # (1, L)
         pad_mask_val = is_pad[:, np.newaxis, np.newaxis, :] * -1e9
 
         # Combine
@@ -55,7 +49,7 @@ def greedy_decode(model, dataset, problem_str, max_len=5):
         mask = Tensor(combined_mask_val)
 
         # Forward
-        logits = model(input_ids, mask) # (1, L, V)
+        logits = model(input_ids, mask)  # (1, L, V)
 
         # Get last token prediction
         last_logits = logits.data[0, -1, :]
@@ -68,6 +62,7 @@ def greedy_decode(model, dataset, problem_str, max_len=5):
         current_input.append(next_id)
 
     return dataset.decode(result)
+
 
 def main():
     print("=== Tiny Transformer Inference ===")
@@ -83,20 +78,20 @@ def main():
         d_model=config.D_MODEL,
         num_heads=config.NUM_HEADS,
         num_layers=config.NUM_LAYERS,
-        max_len=max_seq_len
+        max_len=max_seq_len,
     )
 
     # 2. Load
-    model.load_weights('tiny_model.pkl')
+    model.load_weights(config.MODEL_FILENAME)
 
     print("Type a 2-digit addition problem (e.g. '12+34') or 'q' to quit.")
 
     while True:
         text = input("\nProblem > ").strip().replace(" ", "")
-        if text.lower() == 'q':
+        if text.lower() == "q":
             break
 
-        if '+' not in text:
+        if "+" not in text:
             print("Please use format 'A+B'")
             continue
 
@@ -106,13 +101,14 @@ def main():
             print(f"Model   > {output}")
 
             # Verify
-            a, b = map(int, text.split('+'))
+            a, b = map(int, text.split("+"))
             correct = str(a + b)
             mark = "✅" if output == correct else f"❌ ({correct})"
             print(f"Check   > {mark}")
 
         except Exception as e:
             print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     main()
