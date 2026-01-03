@@ -2,7 +2,9 @@ import numpy as np
 from autograd import Tensor
 from dataset import AdditionDataset
 from model import TransformerModel
+import argparse
 import time
+import config
 
 class AdamOptimizer:
     def __init__(self, parameters, lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
@@ -40,31 +42,37 @@ def train():
     print("=== Training Tiny Autograd Transformer (with Adam) ===")
 
     # 1. Dataset
-    dataset = AdditionDataset(max_digits=2)
+    MAX_DIGITS = 3
+    dataset = AdditionDataset(max_digits=config.MAX_DIGITS)
+
+    # Calculate sufficient max_len
+    # format: "123+456" (7 chars) + <sos> + "579" (3 chars) + <eos> = 12 tokens
+    # dataset.max_input_len = 2*N + 1
+    # dataset.max_output_len = N + 1 + 2
+    # Total seq len trained is input + output (minus 1 for shift)
+    # Safer to just give it enough room.
+    max_seq_len = dataset.max_input_len + dataset.max_output_len + 5
 
     # 2. Model
-    d_model = 48
     model = TransformerModel(
         vocab_size=dataset.vocab_size,
-        d_model=d_model,
-        num_heads=4,
-        num_layers=2
+        d_model=config.D_MODEL,
+        num_heads=config.NUM_HEADS,
+        num_layers=config.NUM_LAYERS,
+        max_len=max_seq_len
     )
 
     # Optimizer
-    optimizer = AdamOptimizer(model.parameters(), lr=0.001)
-
-    batch_size = 32
-    max_steps = 3000
+    optimizer = AdamOptimizer(model.parameters(), lr=config.LEARNING_RATE)
 
     print(f"Model Parameters: {sum(p.data.size for p in model.parameters())}")
-    print(f"Training for {max_steps} steps...")
+    print(f"Training for {config.MAX_STEPS} steps...")
 
     t0 = time.time()
 
-    for i in range(max_steps):
+    for i in range(config.MAX_STEPS):
         # --- Data Preparation ---
-        src, tgt = dataset.get_batch(batch_size=batch_size)
+        src, tgt = dataset.get_batch(batch_size=config.BATCH_SIZE)
         full_input = np.concatenate([src, tgt[:, :-1]], axis=1) # (B, L)
 
         targets_src = np.full_like(src, -100)

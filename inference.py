@@ -2,7 +2,8 @@ import numpy as np
 from autograd import Tensor
 from dataset import AdditionDataset
 from model import TransformerModel
-
+import argparse
+import config
 def greedy_decode(model, dataset, problem_str, max_len=5):
     # Encode Input
     # "12+34" -> [1, 2, +, 3, 4]
@@ -72,13 +73,17 @@ def main():
     print("=== Tiny Transformer Inference ===")
 
     # 1. Init
-    dataset = AdditionDataset(max_digits=2)
-    d_model = 48
+    dataset = AdditionDataset(max_digits=config.MAX_DIGITS)
+
+    # Calculate sufficient max_len just like in train.py
+    max_seq_len = dataset.max_input_len + dataset.max_output_len + 5
+
     model = TransformerModel(
         vocab_size=dataset.vocab_size,
-        d_model=d_model,
-        num_heads=4,
-        num_layers=2
+        d_model=config.D_MODEL,
+        num_heads=config.NUM_HEADS,
+        num_layers=config.NUM_LAYERS,
+        max_len=max_seq_len
     )
 
     # 2. Load

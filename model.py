@@ -243,9 +243,9 @@ class TransformerBlock(Module):
                self.ff1.parameters() + self.ff2.parameters()
 
 class TransformerModel(Module):
-    def __init__(self, vocab_size, d_model, num_heads, num_layers=2):
+    def __init__(self, vocab_size, d_model, num_heads, num_layers=2, max_len=20):
         self.embedding = Embedding(vocab_size, d_model)
-        self.pos_emb = Tensor(self.get_pe(20, d_model)) # Fixed length 20
+        self.pos_emb = Tensor(self.get_pe(max_len, d_model)) # Dynamic length
         self.layers = [TransformerBlock(d_model, num_heads, d_model*4) for _ in range(num_layers)]
         self.fc_out = Linear(d_model, vocab_size)
 

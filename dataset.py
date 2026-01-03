@@ -41,8 +41,24 @@ class AdditionDataset:
         tgt_batch = []
 
         for _ in range(batch_size):
-            n1 = random.randint(0, 10**self.max_digits - 1)
-            n2 = random.randint(0, 10**self.max_digits - 1)
+
+            # Balanced Sampling:
+            # 1. Pick number of digits for n1 and n2 uniformly
+            d1 = random.randint(1, self.max_digits)
+            d2 = random.randint(1, self.max_digits)
+
+            # 2. Generate numbers
+            # If 1 digit: 0-9
+            # If >1 digit: 10^(d-1) to 10^d - 1 (e.g., 10-99)
+            if d1 == 1:
+                n1 = random.randint(0, 9)
+            else:
+                n1 = random.randint(10**(d1-1), 10**d1 - 1)
+
+            if d2 == 1:
+                n2 = random.randint(0, 9)
+            else:
+                n2 = random.randint(10**(d2-1), 10**d2 - 1)
 
             problem_str = f"{n1}+{n2}"
             ans_str = str(n1 + n2)

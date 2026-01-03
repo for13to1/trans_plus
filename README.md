@@ -9,7 +9,8 @@
 *   **纯 NumPy 实现**: 所有的矩阵运算、前向传播、反向传播均只使用 NumPy。
 *   **手写 Autograd**: 实现了一个具有 `backward()` 功能的 `Tensor` 类，支持计算图构建和梯度自动推导。
 *   **完整 Transformer**: 包含 Multi-Head Attention, LayerNorm, FeedForward, Positional Encoding 等核心组件。
-*   **由简入繁**: 以简单的“两位数加法”任务为例，演示模型的训练和推理过程。
+*   **灵活的算术任务**: 支持可配置位数的加法训练（目前默认为 2 位数加法），演示模型的序列建模能力。
+*   **集中配置**: 通过 `config.py` 管理模型超参数和训练设置。
 
 ## 📂 文件结构
 
@@ -18,6 +19,7 @@
 ├── autograd.py   # 核心自动微分引擎：定义 Tensor 类及各种算子 (Add, Mul, MatMul, ReLU, Softmax 等) 的反向传播逻辑
 ├── model.py      # 模型定义：基于 autograd.py 构建的 Linear, LayerNorm, Attention, TransformerBlock 等层
 ├── dataset.py    # 数据集：生成随机的加法算式 (e.g., "12+34=46") 用于训练
+├── config.py     # 配置文件：管理 MAX_DIGITS, 模型参数, 训练参数等
 ├── train.py      # 训练脚本：构建模型、定义 Loss、优化器 (Adam) 并执行训练循环
 ├── inference.py  # 推理脚本：加载训练好的权重，进行交互式的加法预测
 └── README.md     # 说明文档
@@ -35,7 +37,7 @@ pip install numpy
 
 ### 2. 训练模型
 
-运行 `train.py` 开始训练模型。代码会生成加法数据，并在终端打印 Loss 和部分预测结果。
+运行 `train.py` 开始训练模型。代码会读取 `config.py` 中的配置（默认支持 2 位数加法），生成数据并在终端打印 Loss 和部分预测结果。
 
 ```bash
 python3 train.py
@@ -43,7 +45,7 @@ python3 train.py
 
 训练过程说明：
 *   默认训练 3000 步。
-*   模型参数非常小（微型配置）。
+*   配置参数可在 `config.py` 中修改（如 `MAX_DIGITS`, `BATCH_SIZE` 等）。
 *   训练完成后，权重会保存为 `tiny_model.pkl`。
 
 ### 3. 模型推理
@@ -59,14 +61,14 @@ python3 inference.py
 ```text
 === Tiny Transformer Inference ===
 Weights loaded from tiny_model.pkl
-Type a 2-digit addition problem (e.g. '12+34') or 'q' to quit.
+Type a addition problem (e.g. '12+34') or 'q' to quit.
+
+Problem > 12+34
+Model   > 46
+Check   > ✅
 
 Problem > 23+45
 Model   > 68
-Check   > ✅
-
-Problem > 99+01
-Model   > 100
 Check   > ✅
 ```
 
@@ -81,6 +83,7 @@ Check   > ✅
 *   **Embedding**: 简单的查表实现，梯度通过 `np.add.at` 回传。
 *   **MultiHeadAttention**: 实现了 `split_heads` 和 scaled dot-product attention。注意这里手动处理了 `transpose` 和 `reshape` 的维度变换。
 *   **LayerNorm**: 手写了 Layer Normalization 的前向和反向梯度计算。
+*   **Positional Encoding**: 支持动态长度的位置编码，适应不同位数的加法任务。
 
 ## ⚠️ 注意事项
 *   本项目仅供学习和教学使用，性能和数值稳定性无法与成熟框架（PyTorch/JAX）相比。
