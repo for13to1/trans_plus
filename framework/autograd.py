@@ -1,6 +1,20 @@
 import numpy as np
 
 
+"""
+Minimal Autograd Engine for Educational Purposes.
+
+This module implements a basic dynamic computational graph (DAG) engine.
+It supports:
+- Tensor creation and tracking of history (_children).
+- Basic arithmetic operations (+, -, *, /, @).
+- Broadcasting for NumPy arrays.
+- Automated backward pass (Topological Sort).
+
+NOTE: This is not optimized for production performance or numerical stability.
+"""
+
+
 class Tensor:
     def __init__(self, data, _children=(), _op="", label=""):
         self.data = np.array(data) if not isinstance(data, np.ndarray) else data
@@ -94,11 +108,41 @@ class Tensor:
         out._backward = _backward
         return out
 
+        out._backward = _backward
+        return out
+
+    def __rmul__(self, other):  # other * self
+        return self * other
+
     def __neg__(self):  # -self
         return self * -1
 
     def __sub__(self, other):  # self - other
         return self + (-other)
+
+    def __truediv__(self, other):
+        other = other if isinstance(other, Tensor) else Tensor(other)
+        out = Tensor(self.data / other.data, (self, other), "/")
+
+        def _backward():
+            # Gradient for self: 1/other
+            d_self = out.grad / other.data
+            axis_self = tuple(range(d_self.ndim - self.data.ndim))
+            if axis_self:
+                self.grad += np.sum(d_self, axis=axis_self).reshape(self.data.shape)
+            else:
+                self.grad += d_self
+
+            # Gradient for other: -self / other^2
+            d_other = -self.data * out.grad / (other.data**2)
+            axis_other = tuple(range(d_other.ndim - other.data.ndim))
+            if axis_other:
+                other.grad += np.sum(d_other, axis=axis_other).reshape(other.data.shape)
+            else:
+                other.grad += d_other
+
+        out._backward = _backward
+        return out
 
     def matmul(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
@@ -189,6 +233,58 @@ class Tensor:
 
         out._backward = _backward
         return out
+
+        out._backward = _backward
+        return out
+
+    def sum(self, axis=None, keepdims=False):
+        out = Tensor(np.sum(self.data, axis=axis, keepdims=keepdims), (self,), "sum")
+
+        def _backward():
+            # Broadcast gradient to self.shape
+            # If axis is None, out.grad is scalar, self.grad is all ones * scalar
+            # If axis is set, we need to expand dims
+
+            grad = out.grad
+
+            if axis is not None and not keepdims:
+                # Expand dims to match self
+                # If axis=(1,), and shape was (2,3), out is (2,).
+                # We need (2,1) to broadcast to (2,3).
+                # This is complex to handle generically for tuple axes,
+                # but for simple scalar sum (axis=None) or keepdims=True it's easy.
+                # Let's rely on keepdims=True for internal simplicity or handle axis=None.
+                if isinstance(axis, int):
+                    grad = np.expand_dims(grad, axis)
+                elif isinstance(axis, tuple):
+                    for a in sorted(axis):
+                        grad = np.expand_dims(grad, a)
+
+            # If axis is None, grad is scalar.
+            self.grad += grad * np.ones_like(self.data)
+
+        out._backward = _backward
+        return out
+
+    def mean(self, axis=None, keepdims=False):
+        out = self.sum(axis=axis, keepdims=keepdims)
+
+        # Calculate N
+        if axis is None:
+            N = self.data.size
+        elif isinstance(axis, int):
+            N = self.data.shape[axis]
+        else:  # tuple
+            N = 1
+            for a in axis:
+                N *= self.data.shape[a]
+
+        # Scale sum by 1/N
+        # We can implement mean as sum * (1/N)
+        # But we need __mul__ with scalar (float).
+        # Tensor __mul__ expects tensor or converts.
+        # Let's just return out * (1.0/N)
+        return out * (1.0 / N)
 
     # --- Loss Helper ---
     def cross_entropy(self, targets):

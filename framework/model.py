@@ -4,6 +4,17 @@ import pickle
 
 
 class Module:
+    def __init__(self):
+        self.training = True
+
+    def train(self):
+        self.training = True
+        return self
+
+    def eval(self):
+        self.training = False
+        return self
+
     def parameters(self):
         return []
 
@@ -12,7 +23,6 @@ class Module:
             p.grad = np.zeros_like(p.data)
 
     def save_weights(self, path):
-        # Flatten all parameters data into a list
         params_data = [p.data for p in self.parameters()]
         with open(path, "wb") as f:
             pickle.dump(params_data, f)
@@ -37,13 +47,36 @@ class Module:
             print("No weight file found, using random init.")
 
 
+class Dropout(Module):
+    def __init__(self, p=0.1):
+        super().__init__()
+        self.p = p
+
+    def __call__(self, x):
+        if not self.training or self.p == 0:
+            return x
+
+        # Create a mask of 1s and 0s
+        # Scale by 1/(1-p) to maintain expected value
+        scale = 1.0 / (1.0 - self.p)
+        mask = np.random.binomial(1, 1.0 - self.p, size=x.data.shape) * scale
+
+        # We treat mask as a constant Tensor (no gradient required for the mask itself)
+        mask_tensor = Tensor(mask, label="dropout_mask")
+
+        return x * mask_tensor
+
+
 class Linear(Module):
-    def __init__(self, in_features, out_features, bias=True):
-        # Xavier/Kaiming Init
-        limit = np.sqrt(6 / (in_features + out_features))
-        self.weight = Tensor(
-            np.random.uniform(-limit, limit, (in_features, out_features)), label="W"
-        )
+    def __init__(self, in_features, out_features, bias=True, weight=None):
+        super().__init__()
+        if weight is not None:
+            self.weight = weight
+        else:
+            limit = np.sqrt(6 / (in_features + out_features))
+            self.weight = Tensor(
+                np.random.uniform(-limit, limit, (in_features, out_features)), label="W"
+            )
         self.bias = Tensor(np.zeros(out_features), label="b") if bias else None
 
     def __call__(self, x):
@@ -56,30 +89,51 @@ class Linear(Module):
         return [self.weight] + ([self.bias] if self.bias else [])
 
 
+class SharedLinear(Module):
+    def __init__(self, d_model, vocab_size, shared_weight, bias=False):
+        super().__init__()
+        self._shared_weight = shared_weight
+        self._vocab_size = vocab_size
+        self._d_model = d_model
+        self.bias = Tensor(np.zeros(vocab_size), label="b") if bias else None
+
+    def __call__(self, x):
+        shared_w = self._shared_weight.data
+        transposed = np.swapaxes(shared_w, -1, -2)
+        transposed_tensor = Tensor(
+            transposed, _children=(self._shared_weight,), _op="shared_T"
+        )
+        out = x.matmul(transposed_tensor)
+        if self.bias:
+            out = out + self.bias
+        return out
+
+    def parameters(self):
+        if self._shared_weight in [p for layer in [] for p in []]:
+            pass
+        seen = set()
+        params = [self._shared_weight]
+        seen.add(id(self._shared_weight.data))
+        if self.bias:
+            params.append(self.bias)
+        return params
+
+
 class Embedding(Module):
-    def __init__(self, num_embeddings, embedding_dim):
-        self.weight = Tensor(np.random.randn(num_embeddings, embedding_dim) * 0.1)
+    def __init__(self, num_embeddings, embedding_dim, weight=None):
+        super().__init__()
+        if weight is not None:
+            self.weight = weight
+        else:
+            self.weight = Tensor(np.random.randn(num_embeddings, embedding_dim) * 0.1)
 
     def __call__(self, indices):
-        # Helper for handling embedding lookup gradients
-
-        # Forward pass
         out_data = self.weight.data[indices]
         out = Tensor(out_data, (self.weight,), "embedding")
 
-        # Standard closure for backward
         def _backward():
-            # Add gradient to the specific rows
-            # We iterate over unique indices to sum gradients?
-            # Or just use numpy's add.at for efficiency
-
-            # indices might be (batch, seq)
-            # out.grad is (batch, seq, dim)
-
-            # Flatten indices
             flat_indices = indices.reshape(-1)
             flat_grad = out.grad.reshape(-1, out.grad.shape[-1])
-
             np.add.at(self.weight.grad, flat_indices, flat_grad)
 
         out._backward = _backward
@@ -96,13 +150,12 @@ class ReLU(Module):
 
 class LayerNorm(Module):
     def __init__(self, normalized_shape, eps=1e-5):
+        super().__init__()
         self.gamma = Tensor(np.ones(normalized_shape))
         self.beta = Tensor(np.zeros(normalized_shape))
         self.eps = eps
 
     def __call__(self, x):
-        # Manual Forward/Backward for LayerNorm for efficiency
-
         mean = np.mean(x.data, axis=-1, keepdims=True)
         var = np.var(x.data, axis=-1, keepdims=True)
         std = np.sqrt(var + self.eps)
@@ -112,23 +165,15 @@ class LayerNorm(Module):
         out = Tensor(out_data, (x, self.gamma, self.beta), "layernorm")
 
         def _backward():
-            # Primitive gradients for LN are standard but verbose.
-            # d/dx ( gamma * (x-u)/s + beta )
-
             N = x.data.shape[-1]
             x_centered = x.data - mean
-
             dychat = out.grad * self.gamma.data
-
-            # 1/sigma * ( I - 1/N * ones - x_norm*x_norm^T * 1/N ) ?
-            # Standard efficient implementation:
             term1 = N * dychat
             term2 = np.sum(dychat, axis=-1, keepdims=True)
             term3 = x_norm * np.sum(dychat * x_norm, axis=-1, keepdims=True)
-
             dx = (1.0 / N) / std * (term1 - term2 - term3)
 
-            self.beta.grad += np.sum(out.grad, axis=(0, 1))  # Sum over batch/seq
+            self.beta.grad += np.sum(out.grad, axis=(0, 1))
             self.gamma.grad += np.sum(out.grad * x_norm, axis=(0, 1))
             x.grad += dx
 
@@ -140,18 +185,51 @@ class LayerNorm(Module):
 
 
 class MultiHeadAttention(Module):
-    def __init__(self, d_model, num_heads):
+    """
+    Multi-Head Attention mechanism as described in the Transformer paper.
+
+    The attention mechanism maps a query and a set of key-value pairs to an output.
+    Multi-Head Attention performs this function in parallel for `num_heads` times.
+
+    Args:
+        d_model: The number of expected features in the input (vector size).
+        num_heads: The number of heads in the multiheadattention models.
+        dropout: The dropout probability.
+
+    Attributes:
+        d_k (int): Dimensionality of the key/query vectors ($d_{model} / h$).
+        w_q (Linear): Linear projection for Query ($W^Q$).
+        w_k (Linear): Linear projection for Key ($W^K$).
+        w_v (Linear): Linear projection for Value ($W^V$).
+        w_o (Linear): Linear projection for Output ($W^O$).
+    """
+
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
+        self.scale = 1.0 / np.sqrt(self.d_k)
 
-        self.w_q = Linear(d_model, d_model)
-        self.w_k = Linear(d_model, d_model)
-        self.w_v = Linear(d_model, d_model)
-        self.w_o = Linear(d_model, d_model)
+        self.w_q = Linear(d_model, d_model, bias=True)
+        self.w_k = Linear(d_model, d_model, bias=True)
+        self.w_v = Linear(d_model, d_model, bias=True)
+        self.w_o = Linear(d_model, d_model, bias=True)
+        self.dropout = Dropout(dropout)
 
     def __call__(self, q, k, v, mask=None):
-        # q, k, v are Tensors [Batch, Seq, Dim]
+        """
+        Forward pass for Multi-Head Attention.
+
+        Args:
+            q: Queries tensor of shape (Batch, Seq_q, d_model)
+            k: Keys tensor of shape (Batch, Seq_k, d_model)
+            v: Values tensor of shape (Batch, Seq_v, d_model)
+            mask: Optional mask tensor (e.g., (Batch, 1, 1, Seq_k)) for causal/padding masking.
+
+        Returns:
+            Tensor of shape (Batch, Seq_q, d_model) representing the attended output.
+        """
         batch_size = q.data.shape[0]
 
         # Linear Projections
@@ -159,13 +237,10 @@ class MultiHeadAttention(Module):
         K = self.w_k(k)
         V = self.w_v(v)
 
-        # Reshape for Heads
-        # (B, S, H, Dk) -> (B, H, S, Dk)
-
-        # Function to split heads
+        # Split Heads
         def split_heads(x):
             x = x.reshape((batch_size, -1, self.num_heads, self.d_k))
-            x = x.transpose(1, 2)  # (B, S, H, Dk) -> (B, H, S, Dk)
+            x = x.transpose(1, 2)  # (B, H, S, Dk)
             return x
 
         Q = split_heads(Q)
@@ -173,33 +248,18 @@ class MultiHeadAttention(Module):
         V = split_heads(V)
 
         # Scaled Dot Product
-        # Q: (B, H, S, Dk), K: (B, H, S, Dk) -> K.T: (B, H, Dk, S) (Need swap last two)
-
-        # Manual swapaxes for K
-        # K transpose is harder because transpose only takes 2 dims in my generic impl?
-        # My transpose: `np.swapaxes(self.data, dim0, dim1)`.
         K_t = K.transpose(-1, -2)
+        scores = Q.matmul(K_t) * Tensor(np.array(self.scale))
 
-        scores = Q.matmul(K_t)  # (B, H, S, S)
-
-        # Scale scores
-        scale_factor = 1.0 / np.sqrt(self.d_k)
-        scores = scores * Tensor(np.array(scale_factor))
-
-        # Masking
         if mask is not None:
-            # Mask is typically (B, 1, 1, S) or (1, 1, S, S)
-            # Add large negative to masked positions
-            # Tensor __add__ handles broadcast
-            # we need `scores + mask`
             scores = scores + mask
 
         attn = scores.softmax(axis=-1)
+        attn = self.dropout(attn)
 
-        context = attn.matmul(V)  # (B, H, S, Dk)
+        context = attn.matmul(V)
 
         # Concat heads
-        # (B, H, S, Dk) -> (B, S, H, Dk) -> (B, S, D)
         context = context.transpose(1, 2)
         context = context.reshape((batch_size, -1, self.d_model))
 
@@ -213,44 +273,247 @@ class MultiHeadAttention(Module):
             + self.w_o.parameters()
         )
 
+    def train(self):
+        super().train()
+        self.dropout.train()
 
-class TransformerBlock(Module):
-    def __init__(self, d_model, num_heads, d_ff):
-        self.attn = MultiHeadAttention(d_model, num_heads)
-        self.norm1 = LayerNorm((d_model,))
-        self.norm2 = LayerNorm((d_model,))
+    def eval(self):
+        super().eval()
+        self.dropout.eval()
 
-        self.ff1 = Linear(d_model, d_ff)
-        self.ff2 = Linear(d_ff, d_model)
+
+class PositionwiseFeedForward(Module):
+    """
+    Position-wise Feed-Forward Networks.
+
+    A two-layer fully connected neural network applied to each position separately and identically.
+    Equation: FFN(x) = max(0, xW1 + b1)W2 + b2
+
+    Args:
+        d_model: Dimensionality of model input/output.
+        d_ff: Inner-layer dimensionality ($d_{ff}$, typically 4 * d_model).
+        dropout: Random dropout probability.
+    """
+
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super().__init__()
+        self.w_1 = Linear(d_model, d_ff, bias=True)
+        self.w_2 = Linear(d_ff, d_model, bias=True)
+        self.dropout = Dropout(dropout)
         self.relu = ReLU()
 
-    def __call__(self, x, mask=None):
-        # Residual connection: x + attn(x)
-        attn_out = self.attn(x, x, x, mask)
-        x = self.norm1(x + attn_out)
+    def __call__(self, x):
+        return self.w_2(self.dropout(self.relu(self.w_1(x))))
 
-        ff_out = self.ff2(self.relu(self.ff1(x)))
-        x = self.norm2(x + ff_out)
+    def parameters(self):
+        return self.w_1.parameters() + self.w_2.parameters()
+
+    def train(self):
+        super().train()
+        self.dropout.train()
+
+    def eval(self):
+        super().eval()
+        self.dropout.eval()
+
+
+class EncoderLayer(Module):
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
+        super().__init__()
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.ffn = PositionwiseFeedForward(d_model, d_ff, dropout)
+        self.norm1 = LayerNorm((d_model,))
+        self.norm2 = LayerNorm((d_model,))
+        self.dropout1 = Dropout(dropout)
+        self.dropout2 = Dropout(dropout)
+
+    def __call__(self, x, mask=None):
+        # Sublayer 1: Self-Attention
+        attn_out = self.self_attn(x, x, x, mask)
+        x = self.norm1(x + self.dropout1(attn_out))
+
+        # Sublayer 2: FFN
+        ffn_out = self.ffn(x)
+        x = self.norm2(x + self.dropout2(ffn_out))
         return x
 
     def parameters(self):
         return (
-            self.attn.parameters()
+            self.self_attn.parameters()
+            + self.ffn.parameters()
             + self.norm1.parameters()
             + self.norm2.parameters()
-            + self.ff1.parameters()
-            + self.ff2.parameters()
         )
 
+    def train(self):
+        super().train()
+        self.self_attn.train()
+        self.ffn.train()
+        self.dropout1.train()
+        self.dropout2.train()
 
-class TransformerModel(Module):
-    def __init__(self, vocab_size, d_model, num_heads, num_layers=2, max_len=20):
-        self.embedding = Embedding(vocab_size, d_model)
-        self.pos_emb = Tensor(self.get_pe(max_len, d_model))  # Dynamic length
+    def eval(self):
+        super().eval()
+        self.self_attn.eval()
+        self.ffn.eval()
+        self.dropout1.eval()
+        self.dropout2.eval()
+
+
+class DecoderLayer(Module):
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
+        super().__init__()
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.ffn = PositionwiseFeedForward(d_model, d_ff, dropout)
+
+        self.norm1 = LayerNorm((d_model,))
+        self.norm2 = LayerNorm((d_model,))
+        self.norm3 = LayerNorm((d_model,))
+
+        self.dropout1 = Dropout(dropout)
+        self.dropout2 = Dropout(dropout)
+        self.dropout3 = Dropout(dropout)
+
+    def __call__(self, x, memory, src_mask=None, tgt_mask=None):
+        # Sublayer 1: Masked Self-Attention
+        attn_out = self.self_attn(x, x, x, tgt_mask)
+        x = self.norm1(x + self.dropout1(attn_out))
+
+        # Sublayer 2: Cross-Attention
+        # Query comes from decoder (x), Key and Value from encoder (memory)
+        attn_out = self.cross_attn(x, memory, memory, src_mask)
+        x = self.norm2(x + self.dropout2(attn_out))
+
+        # Sublayer 3: FFN
+        ffn_out = self.ffn(x)
+        x = self.norm3(x + self.dropout3(ffn_out))
+        return x
+
+    def parameters(self):
+        return (
+            self.self_attn.parameters()
+            + self.cross_attn.parameters()
+            + self.ffn.parameters()
+            + self.norm1.parameters()
+            + self.norm2.parameters()
+            + self.norm3.parameters()
+        )
+
+    def train(self):
+        super().train()
+        self.self_attn.train()
+        self.cross_attn.train()
+        self.ffn.train()
+        self.dropout1.train()
+        self.dropout2.train()
+        self.dropout3.train()
+
+    def eval(self):
+        super().eval()
+        self.self_attn.eval()
+        self.cross_attn.eval()
+        self.ffn.eval()
+        self.dropout1.eval()
+        self.dropout2.eval()
+        self.dropout3.eval()
+
+
+class Encoder(Module):
+    def __init__(self, d_model, num_heads, d_ff, num_layers, dropout=0.1):
+        super().__init__()
         self.layers = [
-            TransformerBlock(d_model, num_heads, d_model * 4) for _ in range(num_layers)
+            EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)
         ]
-        self.fc_out = Linear(d_model, vocab_size)
+
+    def __call__(self, x, mask=None):
+        for layer in self.layers:
+            x = layer(x, mask)
+        return x
+
+    def parameters(self):
+        params = []
+        for l in self.layers:
+            params += l.parameters()
+        return params
+
+    def train(self):
+        super().train()
+        for l in self.layers:
+            l.train()
+
+    def eval(self):
+        super().eval()
+        for l in self.layers:
+            l.eval()
+
+
+class Decoder(Module):
+    def __init__(self, d_model, num_heads, d_ff, num_layers, dropout=0.1):
+        super().__init__()
+        self.layers = [
+            DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)
+        ]
+
+    def __call__(self, x, memory, src_mask=None, tgt_mask=None):
+        for layer in self.layers:
+            x = layer(x, memory, src_mask, tgt_mask)
+        return x
+
+    def parameters(self):
+        params = []
+        for l in self.layers:
+            params += l.parameters()
+        return params
+
+    def train(self):
+        super().train()
+        for l in self.layers:
+            l.train()
+
+    def eval(self):
+        super().eval()
+        for l in self.layers:
+            l.eval()
+
+
+class Transformer(Module):
+    def __init__(
+        self,
+        src_vocab_size,
+        tgt_vocab_size,
+        d_model=512,
+        num_heads=8,
+        num_layers=6,
+        d_ff=2048,
+        max_len=5000,
+        dropout=0.1,
+    ):
+        super().__init__()
+
+        self.d_model = d_model
+
+        self.shared_weight = Tensor(
+            np.random.randn(tgt_vocab_size, d_model) * 0.1, label="shared_embedding"
+        )
+
+        self.src_embedding = Embedding(
+            src_vocab_size, d_model, weight=self.shared_weight
+        )
+        self.tgt_embedding = Embedding(
+            tgt_vocab_size, d_model, weight=self.shared_weight
+        )
+
+        self.pos_emb = Tensor(self.get_pe(max_len, d_model))
+
+        self.encoder = Encoder(d_model, num_heads, d_ff, num_layers, dropout)
+        self.decoder = Decoder(d_model, num_heads, d_ff, num_layers, dropout)
+
+        self.fc_out = SharedLinear(
+            d_model, tgt_vocab_size, self.shared_weight, bias=False
+        )
+
+        self.dropout = Dropout(dropout)
 
     def get_pe(self, max_len, d_model):
         pe = np.zeros((max_len, d_model))
@@ -258,24 +521,50 @@ class TransformerModel(Module):
         div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
-        return pe[np.newaxis, :, :]
+        return pe[np.newaxis, :, :]  # (1, MaxLen, D)
 
-    def __call__(self, indices, mask=None):
-        # indices: (B, S)
-        x = self.embedding(indices)  # (B, S, D)
-
-        # Add PE (slice to current length)
+    def encode(self, src, src_mask=None):
+        # src: (B, S)
+        x = self.src_embedding(src) * Tensor(np.array(np.sqrt(self.d_model)))
         seq_len = x.data.shape[1]
-        pe_slice = Tensor(self.pos_emb.data[:, :seq_len, :])
-        x = x + pe_slice
+        x = x + Tensor(self.pos_emb.data[:, :seq_len, :])
+        x = self.dropout(x)
+        return self.encoder(x, src_mask)
 
-        for layer in self.layers:
-            x = layer(x, mask)
+    def decode(self, tgt, memory, src_mask=None, tgt_mask=None):
+        # tgt: (B, S)
+        x = self.tgt_embedding(tgt) * Tensor(np.array(np.sqrt(self.d_model)))
+        seq_len = x.data.shape[1]
+        x = x + Tensor(self.pos_emb.data[:, :seq_len, :])
+        x = self.dropout(x)
+        return self.decoder(x, memory, src_mask, tgt_mask)
 
-        return self.fc_out(x)
+    def __call__(self, src, tgt, src_mask=None, tgt_mask=None):
+        memory = self.encode(src, src_mask)
+        output = self.decode(tgt, memory, src_mask, tgt_mask)
+        return self.fc_out(output)
 
     def parameters(self):
-        params = self.embedding.parameters() + self.fc_out.parameters()
-        for l in self.layers:
-            params += l.parameters()
-        return params
+        all_params = self.encoder.parameters() + self.decoder.parameters()
+        seen_data_ids = set()
+        unique_params = []
+        for p in all_params:
+            data_id = id(p.data)
+            if data_id not in seen_data_ids:
+                seen_data_ids.add(data_id)
+                unique_params.append(p)
+        if id(self.shared_weight.data) not in seen_data_ids:
+            unique_params = [self.shared_weight] + unique_params
+        return unique_params
+
+    def train(self):
+        super().train()
+        self.encoder.train()
+        self.decoder.train()
+        self.dropout.train()
+
+    def eval(self):
+        super().eval()
+        self.encoder.eval()
+        self.decoder.eval()
+        self.dropout.eval()

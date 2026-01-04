@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import os
 
@@ -7,10 +8,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from framework.autograd import Tensor
 from addition_agent.dataset import AdditionDataset
-from framework.model import TransformerModel
-import argparse
+from framework.model import Transformer
+from addition_agent import config
 import time
-import addition_agent.config as config
 
 
 class AdamOptimizer:
@@ -46,88 +46,159 @@ class AdamOptimizer:
             p.data -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
 
 
+class NoamOpt:
+    "Optim wrapper that implements rate."
+
+    def __init__(self, model_size, factor, warmup, optimizer):
+        self.optimizer = optimizer
+        self._step = 0
+        self.warmup = warmup
+        self.factor = factor
+        self.model_size = model_size
+        self._rate = 0
+
+    def step(self):
+        "Update parameters and rate"
+        self._step += 1
+        rate = self.rate()
+        for p in self.optimizer.parameters:
+            pass
+        self.optimizer.lr = rate
+        self.optimizer.step()
+
+    def rate(self, step=None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+        # lrate = d_model^-0.5 * min(step_num^-0.5, step_num * warmup_steps^-1.5)
+        return self.factor * (
+            self.model_size ** (-0.5)
+            * min(step ** (-0.5), step * self.warmup ** (-1.5))
+        )
+
+
 def train():
-    print("=== Training Tiny Autograd Transformer (with Adam) ===")
+    print("=== Training autograd transformer using config.py ===")
 
     # 1. Dataset
-    MAX_DIGITS = 3
     dataset = AdditionDataset(max_digits=config.MAX_DIGITS)
 
-    # Calculate sufficient max_len
-    # Ensure enough room for input, output, and special tokens
-    max_seq_len = dataset.max_input_len + dataset.max_output_len + 5
-
-    # 2. Model
-    model = TransformerModel(
-        vocab_size=dataset.vocab_size,
+    # 2. Model with configuration from config.py
+    model = Transformer(
+        src_vocab_size=dataset.vocab_size,
+        tgt_vocab_size=dataset.vocab_size,
         d_model=config.D_MODEL,
         num_heads=config.NUM_HEADS,
         num_layers=config.NUM_LAYERS,
-        max_len=max_seq_len,
+        d_ff=config.D_FF,
+        max_len=dataset.max_input_len + dataset.max_output_len + 10,
+        dropout=0.1,
     )
 
-    # Optimizer
-    optimizer = AdamOptimizer(model.parameters(), lr=config.LEARNING_RATE)
+    # Analyze actual model usage
+    from framework.analyze import analyze_parameters, analyze_memory_usage
+
+    analyze_parameters(model)
+    analyze_memory_usage(
+        d_model=config.D_MODEL,
+        d_ff=config.D_FF,
+        num_layers=config.NUM_LAYERS,
+        vocab_size=dataset.vocab_size,
+    )
+
+    # Optimizer & Scheduler
+    base_optimizer = AdamOptimizer(
+        model.parameters(), lr=0.0, beta1=0.9, beta2=0.999, eps=1e-9
+    )
+    optimizer = NoamOpt(config.D_MODEL, 1, config.WARMUP_STEPS, base_optimizer)
 
     print(f"Model Parameters: {sum(p.data.size for p in model.parameters())}")
     print(f"Training for {config.MAX_STEPS} steps...")
 
     t0 = time.time()
 
-    for i in range(config.MAX_STEPS):
-        # --- Data Preparation ---
-        src, tgt = dataset.get_batch(batch_size=config.BATCH_SIZE)
-        full_input = np.concatenate([src, tgt[:, :-1]], axis=1)  # (B, L)
+    try:
+        for i in range(config.MAX_STEPS):
+            # --- Data Preparation ---
+            src_batch, tgt_batch = dataset.get_batch(batch_size=config.BATCH_SIZE)
 
-        targets_src = np.full_like(src, -100)
-        targets_tgt = tgt[:, 1:]
+            decoder_input = tgt_batch[:, :-1]
+            target_output = tgt_batch[:, 1:]
 
-        # Ignore loss for pad tokens
-        targets_tgt = np.where(targets_tgt == dataset.pad_id, -100, targets_tgt)
+            # --- Masks ---
+            src_is_pad = src_batch == dataset.pad_id
+            src_mask = src_is_pad[:, np.newaxis, np.newaxis, :] * -1e9
 
-        targets = np.concatenate([targets_src, targets_tgt], axis=1)  # (B, L)
+            B, T = decoder_input.shape
+            causal_mask = np.triu(np.ones((T, T)), k=1) * -1e9
+            tgt_is_pad = decoder_input == dataset.pad_id
+            tgt_pad_mask = tgt_is_pad[:, np.newaxis, np.newaxis, :] * -1e9
+            tgt_mask = Tensor(causal_mask[np.newaxis, np.newaxis, :, :] + tgt_pad_mask)
+            src_mask = Tensor(src_mask)
 
-        # --- Masks ---
-        L = full_input.shape[1]
+            # --- Forward Pass ---
+            model.zero_grad()
+            model.train()
 
-        # 1. Causal Mask
-        causal_mask_val = np.triu(np.ones((L, L)), k=1) * -1e9
+            logits = model(src_batch, decoder_input, src_mask, tgt_mask)  # (B, T, V)
 
-        # 2. Padding Mask
-        is_pad = full_input == dataset.pad_id  # (B, L)
-        pad_mask_val = is_pad[:, np.newaxis, np.newaxis, :] * -1e9
+            # --- Simple Cross Entropy Loss ---
+            flat_logits = logits.reshape((-1, dataset.vocab_size))
+            flat_targets = target_output.reshape(-1)
 
-        # Combine
-        combined_mask_val = causal_mask_val[np.newaxis, np.newaxis, :, :] + pad_mask_val
-        mask = Tensor(combined_mask_val)
+            loss = flat_logits.cross_entropy(flat_targets)
 
-        # --- Forward Pass ---
-        model.zero_grad()
-        logits = model(full_input, mask)  # (B, L, V)
+            # --- Backward Pass ---
+            loss.backward()
 
-        # --- Loss Calculation ---
-        loss = logits.reshape((-1, dataset.vocab_size)).cross_entropy(
-            targets.reshape(-1)
-        )
+            # --- Optimizer Step ---
+            optimizer.step()
 
-        # --- Backward Pass ---
-        loss.backward()
+            # --- Logging ---
+            if i % 10 == 0:
+                lr = optimizer.optimizer.lr
+                print(
+                    f"Step {i} | Loss: {loss.data:.4f} | LR: {lr:.6f} | Time: {time.time()-t0:.2f}s"
+                )
 
-        # --- Optimizer Step ---
-        optimizer.step()
+            if i % 100 == 0:
+                # Check last sample in batch
+                model.eval()
+                test_src = src_batch[0:1]  # (1, L)
+                pred_tokens = []
 
-        # --- Logging ---
-        if i % 10 == 0:
-            print(f"Step {i} | Loss: {loss.data:.4f} | Time: {time.time()-t0:.2f}s")
+                memory = model.encode(test_src, src_mask=None)
+                curr_tgt = np.array([[dataset.sos_id]])
 
-        if i % 50 == 0:
-            # Check last sample in batch
-            pred_ids = np.argmax(logits.data[0, -3:, :], axis=-1)
-            pred_tokens = [dataset.id_to_char.get(x, "") for x in pred_ids]
-            print(f"  Example Prediction (Last 3 chars): {pred_tokens}")
+                for _ in range(dataset.max_output_len):
+                    curr_len = curr_tgt.shape[1]
+                    causal_mask_inf = np.triu(np.ones((curr_len, curr_len)), k=1) * -1e9
+                    curr_mask = Tensor(causal_mask_inf[np.newaxis, np.newaxis, :, :])
 
-    # Save Model
-    model.save_weights(config.MODEL_FILENAME)
+                    out = model.decode(
+                        curr_tgt, memory, src_mask=None, tgt_mask=curr_mask
+                    )
+                    next_token_logits = model.fc_out(out).data[:, -1, :]  # (1, V)
+                    next_token = np.argmax(next_token_logits, axis=-1)
+
+                    pred_tokens.append(dataset.id_to_char.get(next_token[0], ""))
+                    curr_tgt = np.concatenate(
+                        [curr_tgt, next_token[:, np.newaxis]], axis=1
+                    )
+
+                    if next_token[0] == dataset.eos_id:
+                        break
+
+                src_str = dataset.decode(test_src[0])
+                print(f"  Example: {src_str} = {''.join(pred_tokens)}")
+                model.train()
+
+        print("Training completed successfully!")
+
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user. Saving current weights...")
+    finally:
+        model.save_weights(config.MODEL_FILENAME)
 
 
 if __name__ == "__main__":

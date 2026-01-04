@@ -6,50 +6,44 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from framework.autograd import Tensor
 from addition_agent.dataset import AdditionDataset
-from framework.model import TransformerModel
+from framework.model import Transformer
 import argparse
 import addition_agent.config as config
 
 
-def greedy_decode(model, dataset, problem_str, max_len=5):
+def greedy_decode(model, dataset, problem_str, max_len=10):
     # Encode Input
     # "12+34" -> [1, 2, +, 3, 4]
     src_ids = dataset.encode(problem_str)
 
-    # Prepare input: "12+34" + "<sos>"
+    # Needs to be a batch of 1
+    src_batch = np.array([src_ids])  # (1, L)
+    # Ideally should pad if we used batching, but for 1 it's fine.
 
-    # Pad src to max length to match training distribution
-    pad_len = dataset.max_input_len - len(src_ids)
-    if pad_len > 0:
-        src_ids = src_ids + [dataset.pad_id] * pad_len
+    # 1. Encode
+    # Create mask if needed (no padding here so None is fine or full ones)
+    model.eval()
+    memory = model.encode(src_batch, src_mask=None)
 
-    current_input = src_ids + [dataset.sos_id]
-
+    # 2. Decode Loop
+    # Start with <sos>
+    current_tgt = [dataset.sos_id]
     result = []
 
     for _ in range(max_len):
         # Prepare input tensor
-        # Add batch dim: (1, L)
-        input_ids = np.array([current_input])
+        tgt_batch = np.array([current_tgt])  # (1, T)
 
-        # Mask
-        # We need both Causal Mask AND Padding Mask
-        L = input_ids.shape[1]
+        # Causal Mask
+        T = tgt_batch.shape[1]
+        causal_mask_val = np.triu(np.ones((T, T)), k=1) * -1e9
+        tgt_mask = Tensor(causal_mask_val[np.newaxis, np.newaxis, :, :])
 
-        # 1. Causal
-        causal_mask_val = np.triu(np.ones((L, L)), k=1) * -1e9
+        # Forward Decoder
+        out = model.decode(tgt_batch, memory, src_mask=None, tgt_mask=tgt_mask)
 
-        # 2. Padding
-        is_pad = input_ids == dataset.pad_id  # (1, L)
-        pad_mask_val = is_pad[:, np.newaxis, np.newaxis, :] * -1e9
-
-        # Combine
-        combined_mask_val = causal_mask_val[np.newaxis, np.newaxis, :, :] + pad_mask_val
-
-        mask = Tensor(combined_mask_val)
-
-        # Forward
-        logits = model(input_ids, mask)  # (1, L, V)
+        # Project to Vocab
+        logits = model.fc_out(out)  # (1, T, V)
 
         # Get last token prediction
         last_logits = logits.data[0, -1, :]
@@ -59,7 +53,11 @@ def greedy_decode(model, dataset, problem_str, max_len=5):
             break
 
         result.append(next_id)
-        current_input.append(next_id)
+        current_tgt.append(next_id)
+
+        # Security break
+        if len(result) > dataset.max_output_len + 5:
+            break
 
     return dataset.decode(result)
 
@@ -71,14 +69,17 @@ def main():
     dataset = AdditionDataset(max_digits=config.MAX_DIGITS)
 
     # Calculate sufficient max_len just like in train.py
-    max_seq_len = dataset.max_input_len + dataset.max_output_len + 5
+    max_seq_len = dataset.max_input_len + dataset.max_output_len + 10
 
-    model = TransformerModel(
-        vocab_size=dataset.vocab_size,
+    model = Transformer(
+        src_vocab_size=dataset.vocab_size,
+        tgt_vocab_size=dataset.vocab_size,
         d_model=config.D_MODEL,
         num_heads=config.NUM_HEADS,
         num_layers=config.NUM_LAYERS,
+        d_ff=config.D_FF,
         max_len=max_seq_len,
+        dropout=0.0,
     )
 
     # 2. Load
