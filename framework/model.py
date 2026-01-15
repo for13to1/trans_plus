@@ -73,6 +73,7 @@ class Linear(Module):
         if weight is not None:
             self.weight = weight
         else:
+            # Xavier 初始化
             limit = np.sqrt(6 / (in_features + out_features))
             self.weight = Tensor(
                 np.random.uniform(-limit, limit, (in_features, out_features)), label="W"
@@ -239,6 +240,10 @@ class MultiHeadAttention(Module):
 
         # Split Heads
         def split_heads(x):
+            # x:
+            # [batch_size, seq_len, d_model] ->
+            # [batch_size, seq_len, num_heads, d_model // num_heads]
+            # [batch_size, num_heads, seq_len, d_model // num_heads]
             x = x.reshape((batch_size, -1, self.num_heads, self.d_k))
             x = x.transpose(1, 2)  # (B, H, S, Dk)
             return x
@@ -262,6 +267,9 @@ class MultiHeadAttention(Module):
         # Concat heads
         context = context.transpose(1, 2)
         context = context.reshape((batch_size, -1, self.d_model))
+        # [batch_size, num_heads, seq_len, d_model // num_heads] ->
+        # [batch_size, seq_len, num_heads, d_model // num_heads] ->
+        # [batch_size, seq_len, d_model]
 
         return self.w_o(context)
 
@@ -330,6 +338,8 @@ class EncoderLayer(Module):
     def __call__(self, x, mask=None):
         # Sublayer 1: Self-Attention
         attn_out = self.self_attn(x, x, x, mask)
+        # Self-Attention 的核心特征：Q=K=V=x。
+        # 模型在理解当前词（x）时，Query 是它自己，去同一个序列（x）中查找信息（Key），并聚合对应的值（Value）。
         x = self.norm1(x + self.dropout1(attn_out))
 
         # Sublayer 2: FFN
@@ -383,6 +393,8 @@ class DecoderLayer(Module):
         # Sublayer 2: Cross-Attention
         # Query comes from decoder (x), Key and Value from encoder (memory)
         attn_out = self.cross_attn(x, memory, memory, src_mask)
+        # Cross-Attention 的核心特征：Q=x, K=V=enc_output。
+        # 模型在理解当前词（x）时，Query 是它自己，去编码器的输出（enc_output）中查找信息（Key），并聚合对应的值（Value）。
         x = self.norm2(x + self.dropout2(attn_out))
 
         # Sublayer 3: FFN
@@ -516,12 +528,29 @@ class Transformer(Module):
         self.dropout = Dropout(dropout)
 
     def get_pe(self, max_len, d_model):
+        """
+        Transformer 的位置编码，就是把自然语言中的“词序”，编码成了一组在复平面上以不同速度旋转的“时钟”。
+        通过比较时钟的相位差（旋转角度），模型就能精确地算出词与词之间的相对距离，这与信号处理中利用相位来解调信息的原理如出一辙。
+
+        :param max_len: The maximum sequence length (context window) the model can handle.
+        :param d_model: The hidden dimension of the model (size of the embedding vector for each token).
+        """
         pe = np.zeros((max_len, d_model))
-        position = np.arange(0, max_len)[:, np.newaxis]
+        position = np.arange(0, max_len)[:, np.newaxis]  # shape=(max_len, 1)
+
+        # 把 $a^b$ 转化为 $\exp(b \cdot \ln a)$:
+        # div_term = 1 / (10000 ^ (2i / d_model))
+        #          = exp( -log(10000) * (2i / d_model) )
+        # Use simple exp/log for better numerical stability compared to direct power division
         div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
+
+        # PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
         pe[:, 0::2] = np.sin(position * div_term)
+        # PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
         pe[:, 1::2] = np.cos(position * div_term)
-        return pe[np.newaxis, :, :]  # (1, MaxLen, D)
+
+        # Add batch dimension [1, max_len, d_model] for broadcasting
+        return pe[np.newaxis, :, :]
 
     def encode(self, src, src_mask=None):
         # src: (B, S)
